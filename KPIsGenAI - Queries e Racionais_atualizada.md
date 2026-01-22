@@ -70,6 +70,7 @@ avg_over_time(
     )
   )[$__range:1m]
 ) * 100
+```
 ---
 
 ## 2. IMPACTO NO NEGÓCIO
@@ -336,3 +337,4 @@ ORDER BY mes DESC, canal;
 
 
 ---
+
