@@ -52,81 +52,24 @@ ORDER BY mes DESC, canal;
 
 ---
 
-### 1.2 % Uptime dos Agentes Conversacionais ⌛ (a ser criada)
+### 1.2 % Uptime (Disponibilidade Técnica)
 
-**Racional:** Mede disponibilidade técnica. Como não existe tabela de health-check nas queries fornecidas, proponho uma **proxy baseada em gaps de atendimento**: se há períodos sem nenhuma conversa durante horário comercial, indica possível indisponibilidade. 
+**Racional:** Mede a disponibilidade dos pods do bot via métricas de infraestrutura (Mimir/Grafana). Monitora se os containers essenciais (`gugelmin-primary`) estão rodando. Substitui a lógica de gaps por monitoramento real.
+**Fonte:** Grafana (Mimir) - Extração via API ou Consulta Manual.
 
-**Opção A - Proxy via gaps (com dados existentes):**
-
-```sql
--- Detecta gaps de mais de 1h sem conversas durante horário comercial
--- Proxy para identificar possíveis indisponibilidades
-
-WITH conversas_por_hora AS (
-    SELECT 
-        DATE_TRUNC('hour', created_at_dt) AS hora,
-        COUNT(DISTINCT protocol_nm) AS qtd_conversas
-    FROM customer_service.customer_service.historic_service
-    WHERE 
-        partner_integration_origem_nm = 'AiAssistant'
-        AND partner_channel_ds IN ('WhatsApp', 'Chat')
-        AND created_at_dt >= DATE '2025-01-01'
-    GROUP BY 1
-),
-
-horas_esperadas AS (
-    -- Gera todas as horas do período (horário comercial: 6h-23h)
-    SELECT hora_gerada
-    FROM UNNEST(SEQUENCE(
-        TIMESTAMP '2025-01-01 06:00:00',
-        CURRENT_TIMESTAMP,
-        INTERVAL '1' HOUR
-    )) AS t(hora_gerada)
-    WHERE HOUR(hora_gerada) BETWEEN 6 AND 23
-),
-
-disponibilidade AS (
-    SELECT
-        DATE_TRUNC('month', he.hora_gerada) AS mes,
-        COUNT(*) AS horas_esperadas,
-        COUNT(cph.hora) AS horas_com_conversas,
-        COUNT(*) - COUNT(cph.hora) AS horas_sem_conversas
-    FROM horas_esperadas he
-    LEFT JOIN conversas_por_hora cph ON cph.hora = he.hora_gerada
-    GROUP BY 1
-)
-
-SELECT
-    mes,
-    horas_esperadas,
-    horas_com_conversas,
-    horas_sem_conversas,
-    ROUND(horas_com_conversas * 100.0 / horas_esperadas, 2) AS uptime_proxy_pct
-FROM disponibilidade
-ORDER BY mes DESC;
-```
-
-**Opção B - Query para tabela de monitoramento ⌛ (a ser criada):**
-
-```sql
--- Requer criação de tabela: workspace.genai.agent_health_checks
--- Populada por job que faz ping nos endpoints a cada 5 min
-
-SELECT
-    DATE_TRUNC('month', check_timestamp) AS mes,
-    agent_name,
-    COUNT(*) AS total_checks,
-    SUM(CASE WHEN status = 'healthy' THEN 1 ELSE 0 END) AS checks_ok,
-    ROUND(
-        SUM(CASE WHEN status = 'healthy' THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 
-        2
-    ) AS uptime_pct
-FROM workspace.genai.agent_health_checks
-WHERE check_timestamp >= DATE '2025-01-01'
-GROUP BY 1, 2
-ORDER BY mes DESC, agent_name;
-```
-
+**Query PromQL (Grafana):**
+```promql
+avg_over_time(
+  (
+    clamp_max(
+      sum(
+        kube_pod_container_status_running{namespace="neon", container="gugelmin"} 
+        * on (namespace, pod) group_left() 
+        namespace_workload_pod:kube_pod_owner:relabel{namespace="neon", workload=~"gugelmin-primary"}
+      ) or vector(0), 1
+    )
+  )[$__range:1m]
+) * 100
 ---
 
 ## 2. IMPACTO NO NEGÓCIO
@@ -293,48 +236,24 @@ ORDER BY mes DESC;
 
 ---
 
-### 2.4 Custo por Conversa (Langfuse Integration) ⌛ (a ser criada)
+### 2.4 Custo por Conversa (Proxy Financeiro)
 
-**Racional:** Monitora a eficiência econômica cruzando o custo de LLM (ingestão via API Langfuse) com o volume de conversas qualificadas.
-**Dependência:** Tabela `workspace.genai.custos_langfuse` (a ser criada com dados da API).
+**Racional:** Cálculo temporário (Jan/Fev) dividindo o custo total faturado (OpenAI) pelo volume de conversas do período. Mantém-se este método até que a ingestão do Langfuse/LiteLLM tenha 100% de cobertura e paridade de valores validada.
+**Fonte:** Fatura OpenAI (Numerador) + Query SQL (Denominador).
 
-**Sugestão** ❗
+**Fórmula:** $$\text{Custo por Conversa} = \frac{\text{Valor Fatura OpenAI (R\$)}}{\text{Qtd. Conversas Brutas}}$$
 
+**Query para Denominador (Volumetria Bruta):**
 ```sql
-WITH custos_langfuse AS (
-    -- Custos agregados por mês vindos da API
-    SELECT
-        DATE_TRUNC('month', data_referencia) AS mes,
-        SUM(total_cost_usd) AS custo_total_usd
-    FROM workspace.genai.custos_langfuse
-    WHERE 
-        project_name IN ('cobranca-bot', 'atendimento-bot') -- Ajustar nomes conforme Langfuse
-        AND data_referencia >= DATE '2025-01-01'
-    GROUP BY 1
-),
-
-volumetria AS (
-    -- Total de conversas qualificadas (Soma das queries do item 1.1)
-    SELECT
-        mes,
-        SUM(conversas_qualificadas) AS total_conversas
-    FROM (
-        -- ... Inserir lógica da CTE metricas_atendimento do item 1.1 aqui ...
-        -- Para simplificar o documento, pode-se referenciar a tabela final de KPIs se ela existir
-    ) 
-    GROUP BY 1
-)
-
 SELECT
-    v.mes,
-    c.custo_total_usd,
-    v.total_conversas,
-    ROUND(c.custo_total_usd / NULLIF(v.total_conversas, 0), 4) AS cpc_usd
-FROM volumetria v
-LEFT JOIN custos_langfuse c ON c.mes = v.mes
-ORDER BY v.mes DESC;
+  COUNT(partner_integration_uuid) AS qtd_conversas_brutas
+FROM customer_service.customer_service.historic_service
+WHERE
+  created_at_dt >= DATE '2025-01-01' -- Ajustar data inicio do mês
+  AND created_at_dt < DATE '2025-02-01' -- Ajustar data inicio do mês seguinte
+  AND partner_channel_ds IN ('Chat', 'WhatsApp', 'WhatsAppCobranca')
+  -- Filtro amplo para capturar todo volume que gera custo de processamento
 ```
-
 ---
 
 ## 4. QUALIDADE
@@ -414,5 +333,6 @@ FROM atendimentos
 GROUP BY 1, 2
 ORDER BY mes DESC, canal;
 ```
+
 
 ---
