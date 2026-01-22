@@ -52,7 +52,7 @@ ORDER BY mes DESC, canal;
 
 ---
 
-### 1.2 % Uptime (Disponibilidade Técnica)
+### 1.2 % Uptime (Disponibilidade Técnica) 🆗
 
 **Racional:** Mede a disponibilidade dos pods do bot via métricas de infraestrutura (Mimir/Grafana). Monitora se os containers essenciais (`gugelmin-primary`) estão rodando. Substitui a lógica de gaps por monitoramento real.
 **Fonte:** Grafana (Mimir) - Extração via API ou Consulta Manual.
@@ -75,7 +75,7 @@ avg_over_time(
 
 ## 2. IMPACTO NO NEGÓCIO
 
-### 2.1 % Conversão (Acordo) ⌛ (a confirmar)
+### 2.1 % Conversão (Acordo) 🆗
 
 **Racional:** Mede efetividade do funil. Calcula taxa de conversão em cada etapa, partindo do CPF informado (lead qualificado) até acordo confirmado. Permite identificar gargalos no funil.
 
@@ -237,7 +237,7 @@ ORDER BY mes DESC;
 
 ---
 
-### 2.4 Custo por Conversa (Proxy Financeiro)
+### 2.4 Custo por Conversa (Proxy Financeiro) 🆗
 
 **Racional:** Cálculo temporário (Jan/Fev) dividindo o custo total faturado (OpenAI) pelo volume de conversas do período. Mantém-se este método até que a ingestão do Langfuse/LiteLLM tenha 100% de cobertura e paridade de valores validada.
 **Fonte:** Fatura OpenAI (Numerador) + Query SQL (Denominador).
@@ -337,4 +337,5 @@ ORDER BY mes DESC, canal;
 
 
 ---
+
 
