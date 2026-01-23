@@ -178,10 +178,11 @@ ORDER BY date(dtpagamento) DESC, canal;
 
 ```sql
 WITH client_ids_bloqueados AS (
-    SELECT DISTINCT clientid AS client_id
+    SELECT DISTINCT 
+        clientid AS client_id,
+        bloqueio
     FROM workspace.prevfraude.superset_orquestrador
-    WHERE unlock_reason_ds IS NULL
-      AND lock_reason_detail_ds IN (
+    WHERE lock_reason_detail_ds IN (
         'PLD', 'Terrorismo', 'Fraude ideológica', 'Subscrição',
         'Fraude boleto', 'Fraude Whatsapp', 'Fraude Ted', 'Fraude PIX',
         'Bureau Único', 'Facematch', 'Relacionamento com fraudador',
@@ -191,7 +192,6 @@ WITH client_ids_bloqueados AS (
         'Vedação Judicial Crédito', 'Ausência de Documento Fiscal', 'Conta Laranja'
       )
 ),
-
 atendimentos AS (
     SELECT 
         DATE_TRUNC('month', hs.created_at_dt) AS mes,
@@ -201,7 +201,7 @@ atendimentos AS (
             x -> x.KEY = 'chatThroughputEvalHumanTakeOver' 
                  AND UPPER(CAST(x.VALUE AS VARCHAR)) = 'TRUE'
         ) AS transbordo_humano,
-        CASE WHEN b.client_id IS NOT NULL THEN TRUE ELSE FALSE END AS is_blocked
+        CASE WHEN b.client_id IS NOT NULL AND b.bloqueio <= hs.created_at_dt THEN TRUE ELSE FALSE END AS is_blocked
     FROM customer_service.customer_service.historic_service hs
     LEFT JOIN martech.martech.client_tracking_inf ct
         ON ct.person_id = LOWER(hs.person_uuid)
@@ -212,7 +212,6 @@ atendimentos AS (
         AND hs.partner_channel_ds IN ('WhatsApp', 'Chat')
         AND hs.partner_integration_origem_nm = 'AiAssistant'
 )
-
 SELECT 
     mes,
     
@@ -229,7 +228,6 @@ SELECT
               THEN protocol_nm END) * 100.0 /
         NULLIF(COUNT(DISTINCT CASE WHEN is_blocked = FALSE THEN protocol_nm END), 0),
     2) AS retencao_pct
-
 FROM atendimentos
 GROUP BY 1
 ORDER BY mes DESC;
@@ -265,10 +263,11 @@ WHERE
 
 ```sql
 WITH client_ids_bloqueados AS (
-    SELECT DISTINCT clientid AS client_id
+    SELECT DISTINCT 
+        clientid AS client_id,
+        bloqueio
     FROM workspace.prevfraude.superset_orquestrador
-    WHERE unlock_reason_ds IS NULL
-      AND lock_reason_detail_ds IN (
+    WHERE lock_reason_detail_ds IN (
         'PLD', 'Terrorismo', 'Fraude ideológica', 'Subscrição',
         'Fraude boleto', 'Fraude Whatsapp', 'Fraude Ted', 'Fraude PIX',
         'Bureau Único', 'Facematch', 'Relacionamento com fraudador',
@@ -278,7 +277,6 @@ WITH client_ids_bloqueados AS (
         'Vedação Judicial Crédito', 'Ausência de Documento Fiscal', 'Conta Laranja'
       )
 ),
-
 atendimentos AS (
     SELECT 
         DATE_TRUNC('month', hs.created_at_dt) AS mes,
@@ -290,7 +288,7 @@ atendimentos AS (
             x -> x.KEY = 'chatThroughputEvalHumanTakeOver' 
                  AND UPPER(CAST(x.VALUE AS VARCHAR)) = 'TRUE'
         ) AS transbordo_humano,
-        CASE WHEN b.client_id IS NOT NULL THEN TRUE ELSE FALSE END AS is_blocked
+        CASE WHEN b.client_id IS NOT NULL AND b.bloqueio <= hs.created_at_dt THEN TRUE ELSE FALSE END AS is_blocked
     FROM customer_service.customer_service.historic_service hs
     LEFT JOIN martech.martech.client_tracking_inf ct
         ON ct.person_id = LOWER(hs.person_uuid)
@@ -301,7 +299,6 @@ atendimentos AS (
         AND hs.partner_channel_ds IN ('WhatsApp', 'Chat')
         AND hs.partner_integration_origem_nm = 'AiAssistant'
 )
-
 SELECT 
     mes,
     canal,
@@ -329,13 +326,72 @@ SELECT
         NULLIF(SUM(SUM(CASE WHEN is_blocked = FALSE AND transbordo_humano = FALSE 
                             AND csat IS NOT NULL THEN 1 ELSE 0 END)) OVER(PARTITION BY mes), 0),
     2) AS csat_consolidado_mes_pct
-
 FROM atendimentos
 GROUP BY 1, 2
 ORDER BY mes DESC, canal;
 ```
 
-
 ---
+### 4.2 CSAT & Retenção - Agentes Conversacionais (Consolidada) 🆗
 
+**Racional:** Usa metodologia Top-2-Box (notas 4 e 5 = satisfeito). Exclui transbordo humano (avalia só a IA) e clientes bloqueados (experiência comprometida por fatores externos). Calcula tanto por canal quanto consolidado.
 
+```sql
+WITH client_ids_bloqueados AS (
+    SELECT DISTINCT 
+        clientid AS client_id,
+        bloqueio
+    FROM workspace.prevfraude.superset_orquestrador
+    WHERE lock_reason_detail_ds IN (
+        'PLD', 'Terrorismo', 'Fraude ideológica', 'Subscrição',
+        'Fraude boleto', 'Fraude Whatsapp', 'Fraude Ted', 'Fraude PIX',
+        'Bureau Único', 'Facematch', 'Relacionamento com fraudador',
+        'Multiplicidade CPF', 'Fraude Gap', 'Estorno Base 2',
+        'Mecanismo de devolução', 'Erro Operacional (Mecanismo de devolução)',
+        'Desenquadramento da MEI', 'Ordem Judicial', 'Bloqueio Preventivo',
+        'Vedação Judicial Crédito', 'Ausência de Documento Fiscal', 'Conta Laranja'
+      )
+),
+atendimentos AS (
+    SELECT 
+        hs.protocol_nm,
+        hs.partner_channel_ds AS canal,
+        DATE_TRUNC('month', hs.created_at_dt) AS mes,
+        TRY_CAST(hs.partner_csat_cd AS INTEGER) AS csat,
+        ANY_MATCH(
+            hs.meta_data, 
+            x -> x.KEY = 'chatThroughputEvalHumanTakeOver' 
+                 AND UPPER(CAST(x.VALUE AS VARCHAR)) = 'TRUE'
+        ) AS transbordo_humano,
+        ct.client_id,
+        CASE WHEN b.client_id IS NOT NULL AND b.bloqueio <= hs.created_at_dt THEN TRUE ELSE FALSE END AS is_blocked
+    FROM customer_service.customer_service.historic_service hs
+    LEFT JOIN martech.martech.client_tracking_inf ct 
+        ON ct.person_id = LOWER(hs.person_uuid)
+    LEFT JOIN client_ids_bloqueados b 
+        ON b.client_id = ct.client_id
+    WHERE 
+        hs.created_at_dt >= TIMESTAMP '2025-01-01 00:00:00'
+        AND hs.partner_channel_ds IN ('WhatsApp', 'Chat')
+        AND hs.partner_integration_origem_nm = 'AiAssistant'
+)
+SELECT 
+    mes,
+    canal,
+    COUNT(DISTINCT protocol_nm) AS total_atendimentos,
+    COUNT(DISTINCT CASE WHEN is_blocked = TRUE THEN protocol_nm END) AS atend_bloqueados,
+    COUNT(DISTINCT CASE WHEN is_blocked = FALSE THEN protocol_nm END) AS atend_sem_bloqueio,
+    ROUND(COUNT(DISTINCT CASE WHEN transbordo_humano = FALSE THEN protocol_nm END) * 100.0 / NULLIF(COUNT(DISTINCT protocol_nm), 0), 2) AS retencao_geral_pct,
+    ROUND(COUNT(DISTINCT CASE WHEN is_blocked = FALSE AND transbordo_humano = FALSE THEN protocol_nm END) * 100.0 / NULLIF(COUNT(DISTINCT CASE WHEN is_blocked = FALSE THEN protocol_nm END), 0), 2) AS retencao_sem_bloq_pct,
+    SUM(CASE WHEN transbordo_humano = FALSE AND csat IS NOT NULL THEN 1 ELSE 0 END) AS votos_geral,
+    ROUND(SUM(CASE WHEN transbordo_humano = FALSE AND csat >= 4 THEN 1 ELSE 0 END) * 100.0 / NULLIF(SUM(CASE WHEN transbordo_humano = FALSE AND csat IS NOT NULL THEN 1 ELSE 0 END), 0), 2) AS csat_geral_pct,
+    SUM(CASE WHEN is_blocked = FALSE AND transbordo_humano = FALSE AND csat IS NOT NULL THEN 1 ELSE 0 END) AS votos_sem_bloq,
+    ROUND(SUM(CASE WHEN is_blocked = FALSE AND transbordo_humano = FALSE AND csat >= 4 THEN 1 ELSE 0 END) * 100.0 / NULLIF(SUM(CASE WHEN is_blocked = FALSE AND transbordo_humano = FALSE AND csat IS NOT NULL THEN 1 ELSE 0 END), 0), 2) AS csat_sem_bloq_pct,
+    ROUND((COUNT(DISTINCT CASE WHEN is_blocked = FALSE AND transbordo_humano = FALSE THEN protocol_nm END) * 100.0 / NULLIF(COUNT(DISTINCT CASE WHEN is_blocked = FALSE THEN protocol_nm END), 0)) - (COUNT(DISTINCT CASE WHEN transbordo_humano = FALSE THEN protocol_nm END) * 100.0 / NULLIF(COUNT(DISTINCT protocol_nm), 0)), 2) AS delta_retencao_pp,
+    ROUND((SUM(CASE WHEN is_blocked = FALSE AND transbordo_humano = FALSE AND csat >= 4 THEN 1 ELSE 0 END) * 100.0 / NULLIF(SUM(CASE WHEN is_blocked = FALSE AND transbordo_humano = FALSE AND csat IS NOT NULL THEN 1 ELSE 0 END), 0)) - (SUM(CASE WHEN transbordo_humano = FALSE AND csat >= 4 THEN 1 ELSE 0 END) * 100.0 / NULLIF(SUM(CASE WHEN transbordo_humano = FALSE AND csat IS NOT NULL THEN 1 ELSE 0 END), 0)), 2) AS delta_csat_pp,
+    ROUND(SUM(COUNT(DISTINCT CASE WHEN is_blocked = FALSE AND transbordo_humano = FALSE THEN protocol_nm END)) OVER(PARTITION BY mes) * 100.0 / NULLIF(SUM(COUNT(DISTINCT CASE WHEN is_blocked = FALSE THEN protocol_nm END)) OVER(PARTITION BY mes), 0), 2) AS retencao_total_mes_sem_bloq_pct,
+    ROUND(SUM(SUM(CASE WHEN is_blocked = FALSE AND transbordo_humano = FALSE AND csat >= 4 THEN 1 ELSE 0 END)) OVER(PARTITION BY mes) * 100.0 / NULLIF(SUM(SUM(CASE WHEN is_blocked = FALSE AND transbordo_humano = FALSE AND csat IS NOT NULL THEN 1 ELSE 0 END)) OVER(PARTITION BY mes), 0), 2) AS csat_total_mes_sem_bloq_pct
+FROM atendimentos
+GROUP BY 1, 2
+ORDER BY 1, 2;
+```
