@@ -191,11 +191,11 @@ WHERE
 ```
 ---
 
-## 4. QUALIDADE
+## 3. QUALIDADE
 
 ---
 
-### 4.2 CSAT & Retenção - Agentes Conversacionais (Consolidada) 🆗
+### 3.1 CSAT & Retenção - Agentes Conversacionais (Consolidada) 🆗
 
 **Racional:** Usa metodologia Top-2-Box (notas 4 e 5 = satisfeito). Exclui transbordo humano (avalia só a IA) e clientes bloqueados (experiência comprometida por fatores externos). Calcula tanto por canal quanto consolidado.
 
@@ -286,5 +286,6 @@ SELECT
 FROM metricas
 ORDER BY mes, canal
 ```
+
 
 
