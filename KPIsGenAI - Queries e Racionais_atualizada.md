@@ -73,16 +73,15 @@ avg_over_time(
 ```
 ---
 
-### 1.3 WCU Agregado (Soma de Usuários Semanais) 🆗
-**Racional:** Mede o volume acumulado de engajamento semanal. A query realiza primeiramente o cálculo de usuários únicos por semana (DISTINCT person_uuid via CTE) para obter o WCU real, e posteriormente soma esses totais semanais para compor o resultado do mês. Diferencia-se do MAU pois captura a recorrência: um usuário que interage em semanas distintas é contabilizado múltiplas vezes no acumulado mensal. 
+### 1.3 WCU Agregado (Média Mensal de Usuários Semanais) 🆗
+**Racional:** Indica a constância de uso do assistente. Calcula-se primeiramente os usuários únicos de cada semana (WCU) e, posteriormente, extrai-se a média aritmética dessas semanas para representar o mês. Diferente do MAU (que mostra alcance total), a Média de WCU demonstra o volume típico de engajamento semanal. Se a Média WCU sobe e o MAU se mantém, significa que os mesmos usuários estão voltando mais vezes (maior retenção). Fonte: Data Lake / Data Warehouse (Tabela: customer_service.customer_service.historic_service). 
 **Fonte:** Trino / Data Lake / Data Warehouse (Tabela: customer_service.customer_service.historic_service)
 
 ```
 WITH weekly_metrics AS (
-    -- Etapa 1: Calcular os usuários únicos por SEMANA (WCU)
+    -- Etapa 1: Calcular WCU de cada semana individualmente
     SELECT
         DATE_TRUNC('week', created_at_dt) AS semana_referencia,
-        partner_channel_ds,
         COUNT(DISTINCT person_uuid) AS wcu_semanal
     FROM
         customer_service.customer_service.historic_service
@@ -91,19 +90,18 @@ WITH weekly_metrics AS (
         AND partner_integration_origem_nm = 'AiAssistant'
         AND created_at_dt >= DATE '2025-12-01'
     GROUP BY
-        1, 2
+        1
 )
--- Etapa 2: Somar os WCUs agrupando pelo mês de início da semana
+-- Etapa 2: Tirar a MÉDIA desses valores agrupando pelo mês
 SELECT
     DATE_TRUNC('month', semana_referencia) AS mes_referencia,
-    partner_channel_ds,
-    SUM(wcu_semanal) AS soma_wcu_mensal
+    AVG(wcu_semanal) AS media_wcu_mensal -- Alterado de SUM para AVG
 FROM
     weekly_metrics
 GROUP BY
-    1, 2
+    1
 ORDER BY
-    1 DESC, 2;
+    1 DESC;
 ```
 
 ## 2. IMPACTO NO NEGÓCIO
@@ -319,6 +317,7 @@ SELECT
 FROM metricas
 ORDER BY mes, canal
 ```
+
 
 
 
