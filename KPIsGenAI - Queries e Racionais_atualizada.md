@@ -73,6 +73,39 @@ avg_over_time(
 ```
 ---
 
+### 1.3 WCU Agregado (Soma de Usuários Semanais) 🆗
+**Racional:** Mede o volume acumulado de engajamento semanal. A query realiza primeiramente o cálculo de usuários únicos por semana (DISTINCT person_uuid via CTE) para obter o WCU real, e posteriormente soma esses totais semanais para compor o resultado do mês. Diferencia-se do MAU pois captura a recorrência: um usuário que interage em semanas distintas é contabilizado múltiplas vezes no acumulado mensal. 
+**Fonte:** Trino / Data Lake / Data Warehouse (Tabela: customer_service.customer_service.historic_service)
+
+```
+WITH weekly_metrics AS (
+    -- Etapa 1: Calcular os usuários únicos por SEMANA (WCU)
+    SELECT
+        DATE_TRUNC('week', created_at_dt) AS semana_referencia,
+        partner_channel_ds,
+        COUNT(DISTINCT person_uuid) AS wcu_semanal
+    FROM
+        customer_service.customer_service.historic_service
+    WHERE
+        partner_channel_ds IN ('WhatsApp', 'Chat', 'WhatsAppCobranca')
+        AND partner_integration_origem_nm = 'AiAssistant'
+        AND created_at_dt >= DATE '2025-12-01'
+    GROUP BY
+        1, 2
+)
+-- Etapa 2: Somar os WCUs agrupando pelo mês de início da semana
+SELECT
+    DATE_TRUNC('month', semana_referencia) AS mes_referencia,
+    partner_channel_ds,
+    SUM(wcu_semanal) AS soma_wcu_mensal
+FROM
+    weekly_metrics
+GROUP BY
+    1, 2
+ORDER BY
+    1 DESC, 2;
+```
+
 ## 2. IMPACTO NO NEGÓCIO
 
 ### 2.1 % Conversão (Acordo) 🆗
@@ -286,6 +319,7 @@ SELECT
 FROM metricas
 ORDER BY mes, canal
 ```
+
 
 
 
