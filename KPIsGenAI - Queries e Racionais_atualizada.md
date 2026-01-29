@@ -74,8 +74,8 @@ avg_over_time(
 ---
 
 ### 1.3 WCU Agregado (Média Mensal de Usuários Semanais) 🆗
-**Racional:** Indica a constância de uso do assistente. Calcula-se primeiramente os usuários únicos de cada semana (WCU) e, posteriormente, extrai-se a média aritmética dessas semanas para representar o mês. Diferente do MAU (que mostra alcance total), a Média de WCU demonstra o volume típico de engajamento semanal. Se a Média WCU sobe e o MAU se mantém, significa que os mesmos usuários estão voltando mais vezes (maior retenção). Fonte: Data Lake / Data Warehouse (Tabela: customer_service.customer_service.historic_service). 
-**Fonte:** Trino / Data Lake / Data Warehouse (Tabela: customer_service.customer_service.historic_service)
+**Racional:** Indica a constância de uso do assistente. Calcula-se primeiramente os usuários únicos de cada semana (WCU) e, posteriormente, **extrai-se a média aritmética desses WCUs semanais** para representar o mês. Diferente do MAU (que mostra alcance total), a Média de WCU demonstra o volume típico de engajamento semanal. Se a Média WCU sobe e o MAU se mantém, significa que os mesmos usuários estão voltando mais vezes (maior retenção).
+**Fonte:** Trino / Data Lake / Data Warehouse (Tabela: `customer_service.customer_service.historic_service`)
 
 ```
 WITH weekly_metrics AS (
@@ -317,6 +317,7 @@ SELECT
 FROM metricas
 ORDER BY mes, canal
 ```
+
 
 
 
