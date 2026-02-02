@@ -1,51 +1,52 @@
-## 1. Qualidade da Retenção GenAI (Visão Bacen)
-**Racional**
-Esta query isola os atendimentos onde a IA atuou e não houve transferência para humano (seja por resolução bem-sucedida ou abandono do fluxo pelo cliente).
-
-Lógica de Filtro: Utilizamos uma exclusão (NOT ANY_MATCH) na flag humanTakeOver. Se a flag de transbordo não existe ou é falsa, consideramos que o atendimento foi retido pela IA.
-
-Janela de Atribuição: Cruzamos com a base do Bacen verificando se houve abertura de reclamação entre a data do atendimento e 30 dias depois.
-
-KPIs Gerados:
-
-Base_Clientes_Retidos_IA: Volume total de retenção.
-
-Qtd_Clientes_que_Reclamaram: Volume de ofensores.
-
-Taxa_Insatisfacao_Bacen_Pct: Percentual de risco regulatório.
-
-```sql
 -- ============================================================================
--- RELATÓRIO EXECUTIVO: Qualidade da Retenção GenAI vs. Bacen
+-- QUERIES ESTUDO BACEN - CORRIGIDAS
+-- Contagem por ATENDIMENTO (protocol_nm) para consistência com métricas de retenção
 -- ============================================================================
 
--- -----------------------------------------------------------------------------
--- ETAPA 1: Buscar atendimentos 100% retidos pela IA (Lógica Corrigida)
--- -----------------------------------------------------------------------------
+
+-- ============================================================================
+-- QUERY 1: VOLUME TOTAL DE ENTRADAS NO BACEN (Por Mês)
+-- ============================================================================
+-- Racional: Total geral de reclamações Bacen, independente de atendimento prévio
+-- Nota: Esta query permanece por client_id pois é o total GERAL do Bacen
+
+SELECT
+    DATE_TRUNC('month', dt_abertura) AS mes_referencia,
+    COUNT(DISTINCT protocolo_id_canal) AS total_reclamacoes_bacen,
+    COUNT(DISTINCT client_id) AS total_clientes_unicos
+FROM workspace.gec.base_atualizacao_bacen_qs
+WHERE nm_canal = 'BACEN NEON'
+  AND dt_abertura >= DATE '2025-09-01'
+  AND dt_abertura < CURRENT_DATE
+GROUP BY DATE_TRUNC('month', dt_abertura)
+ORDER BY mes_referencia DESC;
+
+
+-- ============================================================================
+-- QUERY 2: VOLUME BACEN APÓS ATENDIMENTO GENAI (Retenção)
+-- ============================================================================
+-- Racional: Atendimentos retidos pela IA que geraram reclamação no Bacen
+-- Alteração: Contagem por protocol_nm (atendimentos) em vez de client_id
+
 WITH atendimentos_genai AS (
     SELECT
         hs.protocol_nm,
         hs.person_uuid,
-        hs.created_at_dt AS dt_atendimento_genai,
+        hs.created_at_dt AS dt_atendimento,
         DATE_TRUNC('month', hs.created_at_dt) AS mes_atendimento,
-        hs.partner_channel_ds AS canal_genai,
+        hs.partner_channel_ds AS canal,
         ct.client_id
     FROM customer_service.customer_service.historic_service hs
     INNER JOIN martech.martech.client_tracking_inf ct 
         ON ct.person_id = LOWER(hs.person_uuid)
-    WHERE hs.created_at_dt >= TIMESTAMP '2025-01-01'
-      AND hs.created_at_dt < CURRENT_DATE + INTERVAL '1' DAY
+    WHERE hs.created_at_dt >= TIMESTAMP '2025-09-01'
+      AND hs.created_at_dt < CURRENT_DATE
       AND hs.partner_channel_ds IN ('WhatsApp', 'Chat')
       AND hs.partner_integration_origem_nm = 'AiAssistant'
-      
-      -- FILTRO DE RETENÇÃO (IA resolveu sozinha)
-      -- Lógica: Excluímos quem teve transbordo (TRUE). O resto é retenção.
+      -- Retenção: NÃO houve transbordo (consistente com query de retenção)
       AND NOT ANY_MATCH(hs.meta_data, x -> x.KEY = 'humanTakeOver' AND UPPER(CAST(x.VALUE AS VARCHAR)) = 'TRUE')
 ),
 
--- -----------------------------------------------------------------------------
--- ETAPA 2: Buscar Base de Reclamações Bacen
--- -----------------------------------------------------------------------------
 reclamacoes_bacen AS (
     SELECT
         client_id,
@@ -53,90 +54,59 @@ reclamacoes_bacen AS (
         protocolo_id_canal
     FROM workspace.gec.base_atualizacao_bacen_qs
     WHERE nm_canal = 'BACEN NEON'
-      AND dt_abertura >= DATE '2025-01-01'
+      AND dt_abertura >= DATE '2025-09-01'
 ),
 
--- -----------------------------------------------------------------------------
--- ETAPA 3: Cruzamento (Quem da IA foi para o Bacen?)
--- -----------------------------------------------------------------------------
+-- Cruzamento: Atendimentos que geraram reclamação
 genai_para_bacen AS (
-    SELECT
-        g.protocol_nm,
-        g.client_id,
+    SELECT DISTINCT
+        g.protocol_nm,  -- Chave primária = atendimento
         g.mes_atendimento,
-        g.canal_genai,
-        g.dt_atendimento_genai,
-        b.dt_abertura
+        g.canal,
+        g.client_id,
+        b.protocolo_id_canal AS protocolo_bacen
     FROM atendimentos_genai g
     INNER JOIN reclamacoes_bacen b 
         ON CAST(g.client_id AS VARCHAR) = CAST(b.client_id AS VARCHAR)
-        -- Reclamação ocorreu DEPOIS do atendimento e em até 30 dias
-        AND b.dt_abertura >= CAST(g.dt_atendimento_genai AS DATE)
-        AND b.dt_abertura <= CAST(g.dt_atendimento_genai AS DATE) + INTERVAL '30' DAY
+        AND b.dt_abertura >= CAST(g.dt_atendimento AS DATE)
+        AND b.dt_abertura <= CAST(g.dt_atendimento AS DATE) + INTERVAL '30' DAY
 ),
 
--- -----------------------------------------------------------------------------
--- ETAPA 4: Agrupamento de Dados
--- -----------------------------------------------------------------------------
 metricas AS (
     SELECT
         g.mes_atendimento,
-        g.canal_genai,
-        -- Volumetria
-        COUNT(DISTINCT g.client_id) AS total_clientes,
-        COUNT(DISTINCT gb.client_id) AS clientes_reclamaram
+        g.canal,
+        -- Base: Total de ATENDIMENTOS retidos pela IA
+        COUNT(DISTINCT g.protocol_nm) AS total_atendimentos,
+        -- Reclamações: ATENDIMENTOS que geraram ida ao Bacen
+        COUNT(DISTINCT gb.protocol_nm) AS atendimentos_reclamaram
     FROM atendimentos_genai g
     LEFT JOIN genai_para_bacen gb 
-        ON CAST(g.client_id AS VARCHAR) = CAST(gb.client_id AS VARCHAR)
-        AND g.protocol_nm = gb.protocol_nm
-    GROUP BY g.mes_atendimento, g.canal_genai
+        ON g.protocol_nm = gb.protocol_nm
+    GROUP BY g.mes_atendimento, g.canal
 )
 
--- -----------------------------------------------------------------------------
--- ETAPA 5: Apresentação Final (Nomes Amigáveis)
--- -----------------------------------------------------------------------------
 SELECT
-    -- 1. TEMPO E CANAL
     CAST(mes_atendimento AS DATE) AS Mes_Referencia,
-    canal_genai AS Canal,
-    
-    -- 2. VOLUMETRIA (Quantas pessoas a IA atendeu?)
-    total_clientes AS Base_Clientes_Retidos_IA,
-    
-    -- 3. RESULTADO NEGATIVO (Quantos reclamaram?)
-    clientes_reclamaram AS Qtd_Clientes_que_Reclamaram,
-    
-    -- 4. INDICADORES DE QUALIDADE (Percentuais)
-    ROUND(clientes_reclamaram * 100.0 / NULLIF(total_clientes, 0), 4) AS Taxa_Insatisfacao_Bacen_Pct,
-    
-    -- 5. CONTEXTO GERAL (Média do mês para comparar)
+    canal AS Canal,
+    total_atendimentos AS Base_Atendimentos_Retidos_IA,
+    atendimentos_reclamaram AS Qtd_Atendimentos_Reclamaram,
+    ROUND(atendimentos_reclamaram * 100.0 / NULLIF(total_atendimentos, 0), 4) AS Taxa_Insatisfacao_Bacen_Pct,
+    -- Contexto: Taxa média do mês (todos os canais)
     ROUND(
-        SUM(clientes_reclamaram) OVER(PARTITION BY mes_atendimento) * 100.0 / 
-        NULLIF(SUM(total_clientes) OVER(PARTITION BY mes_atendimento), 0), 
-    4) AS Taxa_Media_Mensal_Global_Pct
-
+        SUM(atendimentos_reclamaram) OVER(PARTITION BY mes_atendimento) * 100.0 / 
+        NULLIF(SUM(total_atendimentos) OVER(PARTITION BY mes_atendimento), 0), 
+    4) AS Taxa_Media_Mensal_Pct
 FROM metricas
 ORDER BY Mes_Referencia DESC, Canal;
-```
 
----
 
-### 2. Qualidade do Transbordo Humano vs. Bacen (Benchmark)
-**Racional**
-Esta query serve como Linha de Base (Benchmark) para comparação. Ela isola os atendimentos que iniciaram na IA mas foram transferidos para um humano.
-
-Lógica de Filtro: Utilizamos a inclusão (ANY_MATCH) buscando explicitamente a flag humanTakeOver = 'TRUE'.
-
-Objetivo: Comparar se a taxa de reclamação de quem fala com o humano é maior ou menor do que quem fica retido na IA. Isso valida se a IA está "segurando" problemas ou resolvendo de fato.
-
-```sql
 -- ============================================================================
--- RELATÓRIO EXECUTIVO: Qualidade do Transbordo Humano vs. Bacen (BENCHMARK)
+-- QUERY 3: VOLUME BACEN APÓS ATENDIMENTO HUMANO (Transbordo/Geek)
 -- ============================================================================
+-- Racional: Atendimentos transbordados para humano que geraram reclamação
+-- Alteração: Contagem por protocol_nm (atendimentos) em vez de client_id
 
--- -----------------------------------------------------------------------------
--- ETAPA 1: Buscar atendimentos com TRANSBORDO para Humano
--- -----------------------------------------------------------------------------
 WITH atendimentos_humano AS (
     SELECT
         hs.protocol_nm,
@@ -148,19 +118,14 @@ WITH atendimentos_humano AS (
     FROM customer_service.customer_service.historic_service hs
     INNER JOIN martech.martech.client_tracking_inf ct 
         ON ct.person_id = LOWER(hs.person_uuid)
-    WHERE hs.created_at_dt >= TIMESTAMP '2025-01-01'
-      AND hs.created_at_dt < CURRENT_DATE + INTERVAL '1' DAY
+    WHERE hs.created_at_dt >= TIMESTAMP '2025-09-01'
+      AND hs.created_at_dt < CURRENT_DATE
       AND hs.partner_channel_ds IN ('WhatsApp', 'Chat')
       AND hs.partner_integration_origem_nm = 'AiAssistant'
-      
-      -- FILTRO DE TRANSBORDO (Foi para o Humano)
-      -- Lógica: Buscamos explicitamente a flag TRUE.
+      -- Transbordo: HOUVE transferência para humano
       AND ANY_MATCH(hs.meta_data, x -> x.KEY = 'humanTakeOver' AND UPPER(CAST(x.VALUE AS VARCHAR)) = 'TRUE')
 ),
 
--- -----------------------------------------------------------------------------
--- ETAPA 2: Buscar Base de Reclamações Bacen
--- -----------------------------------------------------------------------------
 reclamacoes_bacen AS (
     SELECT
         client_id,
@@ -168,67 +133,295 @@ reclamacoes_bacen AS (
         protocolo_id_canal
     FROM workspace.gec.base_atualizacao_bacen_qs
     WHERE nm_canal = 'BACEN NEON'
-      AND dt_abertura >= DATE '2025-01-01'
+      AND dt_abertura >= DATE '2025-09-01'
 ),
 
--- -----------------------------------------------------------------------------
--- ETAPA 3: Cruzamento (Quem do Humano foi para o Bacen?)
--- -----------------------------------------------------------------------------
+-- Cruzamento: Atendimentos que geraram reclamação
 humano_para_bacen AS (
-    SELECT
-        h.protocol_nm,
-        h.client_id,
+    SELECT DISTINCT
+        h.protocol_nm,  -- Chave primária = atendimento
         h.mes_atendimento,
         h.canal,
-        h.dt_atendimento,
-        b.dt_abertura
+        h.client_id,
+        b.protocolo_id_canal AS protocolo_bacen
     FROM atendimentos_humano h
     INNER JOIN reclamacoes_bacen b 
         ON CAST(h.client_id AS VARCHAR) = CAST(b.client_id AS VARCHAR)
-        -- Reclamação ocorreu DEPOIS do atendimento e em até 30 dias
         AND b.dt_abertura >= CAST(h.dt_atendimento AS DATE)
         AND b.dt_abertura <= CAST(h.dt_atendimento AS DATE) + INTERVAL '30' DAY
 ),
 
--- -----------------------------------------------------------------------------
--- ETAPA 4: Agrupamento de Dados
--- -----------------------------------------------------------------------------
 metricas AS (
     SELECT
         h.mes_atendimento,
         h.canal,
-        -- Volumetria
-        COUNT(DISTINCT h.client_id) AS total_clientes,
-        COUNT(DISTINCT hb.client_id) AS clientes_reclamaram
+        -- Base: Total de ATENDIMENTOS transbordados
+        COUNT(DISTINCT h.protocol_nm) AS total_atendimentos,
+        -- Reclamações: ATENDIMENTOS que geraram ida ao Bacen
+        COUNT(DISTINCT hb.protocol_nm) AS atendimentos_reclamaram
     FROM atendimentos_humano h
     LEFT JOIN humano_para_bacen hb 
-        ON CAST(h.client_id AS VARCHAR) = CAST(hb.client_id AS VARCHAR)
-        AND h.protocol_nm = hb.protocol_nm
+        ON h.protocol_nm = hb.protocol_nm
     GROUP BY h.mes_atendimento, h.canal
 )
 
--- -----------------------------------------------------------------------------
--- ETAPA 5: Apresentação Final (Igual ao Modelo GenAI)
--- -----------------------------------------------------------------------------
 SELECT
-    -- 1. TEMPO E CANAL
     CAST(mes_atendimento AS DATE) AS Mes_Referencia,
     canal AS Canal,
-    
-    -- 2. VOLUMETRIA (Diferença no nome apenas para identificar o contexto)
-    total_clientes AS Base_Clientes_Transbordo,
-    
-    -- 3. RESULTADO NEGATIVO 
-    clientes_reclamaram AS Qtd_Clientes_que_Reclamaram,
-    
-    -- 4. INDICADORES DE QUALIDADE (Percentuais)
-    ROUND(clientes_reclamaram * 100.0 / NULLIF(total_clientes, 0), 4) AS Taxa_Insatisfacao_Bacen_Pct,
-    
-    -- 5. CONTEXTO GERAL
+    total_atendimentos AS Base_Atendimentos_Transbordo,
+    atendimentos_reclamaram AS Qtd_Atendimentos_Reclamaram,
+    ROUND(atendimentos_reclamaram * 100.0 / NULLIF(total_atendimentos, 0), 4) AS Taxa_Insatisfacao_Bacen_Pct,
+    -- Contexto: Taxa média do mês (todos os canais)
     ROUND(
-        SUM(clientes_reclamaram) OVER(PARTITION BY mes_atendimento) * 100.0 / 
-        NULLIF(SUM(total_clientes) OVER(PARTITION BY mes_atendimento), 0), 
-    4) AS Taxa_Media_Mensal_Global_Pct
-
+        SUM(atendimentos_reclamaram) OVER(PARTITION BY mes_atendimento) * 100.0 / 
+        NULLIF(SUM(total_atendimentos) OVER(PARTITION BY mes_atendimento), 0), 
+    4) AS Taxa_Media_Mensal_Pct
 FROM metricas
 ORDER BY Mes_Referencia DESC, Canal;
+
+
+-- ============================================================================
+-- QUERY 4: PERCENTUAL DE RECLAMAÇÕES POR CANAL (Chat vs WhatsApp)
+-- ============================================================================
+-- Racional: Distribuição das reclamações Bacen por canal de origem
+-- Alteração: Contagem por protocol_nm (atendimentos)
+
+WITH atendimentos_todos AS (
+    SELECT
+        hs.protocol_nm,
+        hs.created_at_dt AS dt_atendimento,
+        DATE_TRUNC('month', hs.created_at_dt) AS mes_atendimento,
+        hs.partner_channel_ds AS canal,
+        ct.client_id,
+        CASE 
+            WHEN ANY_MATCH(hs.meta_data, x -> x.KEY = 'humanTakeOver' AND UPPER(CAST(x.VALUE AS VARCHAR)) = 'TRUE')
+            THEN 'Humano'
+            ELSE 'GenAI'
+        END AS tipo_atendimento
+    FROM customer_service.customer_service.historic_service hs
+    INNER JOIN martech.martech.client_tracking_inf ct 
+        ON ct.person_id = LOWER(hs.person_uuid)
+    WHERE hs.created_at_dt >= TIMESTAMP '2025-09-01'
+      AND hs.created_at_dt < CURRENT_DATE
+      AND hs.partner_channel_ds IN ('WhatsApp', 'Chat')
+      AND hs.partner_integration_origem_nm = 'AiAssistant'
+),
+
+reclamacoes_bacen AS (
+    SELECT client_id, dt_abertura, protocolo_id_canal
+    FROM workspace.gec.base_atualizacao_bacen_qs
+    WHERE nm_canal = 'BACEN NEON'
+      AND dt_abertura >= DATE '2025-09-01'
+),
+
+atendimento_para_bacen AS (
+    SELECT DISTINCT
+        a.protocol_nm,  -- Chave = atendimento
+        a.mes_atendimento,
+        a.canal,
+        a.tipo_atendimento
+    FROM atendimentos_todos a
+    INNER JOIN reclamacoes_bacen b 
+        ON CAST(a.client_id AS VARCHAR) = CAST(b.client_id AS VARCHAR)
+        AND b.dt_abertura >= CAST(a.dt_atendimento AS DATE)
+        AND b.dt_abertura <= CAST(a.dt_atendimento AS DATE) + INTERVAL '30' DAY
+),
+
+metricas_canal AS (
+    SELECT
+        mes_atendimento,
+        canal,
+        COUNT(DISTINCT protocol_nm) AS total_atendimentos_reclamaram
+    FROM atendimento_para_bacen
+    GROUP BY mes_atendimento, canal
+)
+
+SELECT
+    CAST(mes_atendimento AS DATE) AS mes_referencia,
+    canal,
+    total_atendimentos_reclamaram,
+    ROUND(
+        total_atendimentos_reclamaram * 100.0 / SUM(total_atendimentos_reclamaram) OVER(PARTITION BY mes_atendimento),
+        2
+    ) AS percentual_canal
+FROM metricas_canal
+ORDER BY mes_referencia DESC, canal;
+
+
+-- ============================================================================
+-- QUERY 5: PERCENTUAL DE RECLAMAÇÕES POR TIPO (GenAI vs Humano/Geek)
+-- ============================================================================
+-- Racional: Comparação direta entre retenção IA e transbordo humano
+-- Alteração: Contagem por protocol_nm (atendimentos)
+
+WITH atendimentos_todos AS (
+    SELECT
+        hs.protocol_nm,
+        hs.created_at_dt AS dt_atendimento,
+        DATE_TRUNC('month', hs.created_at_dt) AS mes_atendimento,
+        hs.partner_channel_ds AS canal,
+        ct.client_id,
+        CASE 
+            WHEN ANY_MATCH(hs.meta_data, x -> x.KEY = 'humanTakeOver' AND UPPER(CAST(x.VALUE AS VARCHAR)) = 'TRUE')
+            THEN 'Humano (Geek)'
+            ELSE 'GenAI (Retenção)'
+        END AS tipo_atendimento
+    FROM customer_service.customer_service.historic_service hs
+    INNER JOIN martech.martech.client_tracking_inf ct 
+        ON ct.person_id = LOWER(hs.person_uuid)
+    WHERE hs.created_at_dt >= TIMESTAMP '2025-09-01'
+      AND hs.created_at_dt < CURRENT_DATE
+      AND hs.partner_channel_ds IN ('WhatsApp', 'Chat')
+      AND hs.partner_integration_origem_nm = 'AiAssistant'
+),
+
+reclamacoes_bacen AS (
+    SELECT client_id, dt_abertura, protocolo_id_canal
+    FROM workspace.gec.base_atualizacao_bacen_qs
+    WHERE nm_canal = 'BACEN NEON'
+      AND dt_abertura >= DATE '2025-09-01'
+),
+
+atendimento_para_bacen AS (
+    SELECT DISTINCT
+        a.protocol_nm,  -- Chave = atendimento
+        a.mes_atendimento,
+        a.canal,
+        a.tipo_atendimento
+    FROM atendimentos_todos a
+    INNER JOIN reclamacoes_bacen b 
+        ON CAST(a.client_id AS VARCHAR) = CAST(b.client_id AS VARCHAR)
+        AND b.dt_abertura >= CAST(a.dt_atendimento AS DATE)
+        AND b.dt_abertura <= CAST(a.dt_atendimento AS DATE) + INTERVAL '30' DAY
+),
+
+metricas_tipo AS (
+    SELECT
+        mes_atendimento,
+        tipo_atendimento,
+        COUNT(DISTINCT protocol_nm) AS total_atendimentos_reclamaram
+    FROM atendimento_para_bacen
+    GROUP BY mes_atendimento, tipo_atendimento
+)
+
+SELECT
+    CAST(mes_atendimento AS DATE) AS mes_referencia,
+    tipo_atendimento,
+    total_atendimentos_reclamaram,
+    ROUND(
+        total_atendimentos_reclamaram * 100.0 / SUM(total_atendimentos_reclamaram) OVER(PARTITION BY mes_atendimento),
+        2
+    ) AS percentual_tipo
+FROM metricas_tipo
+ORDER BY mes_referencia DESC, tipo_atendimento;
+
+
+-- ============================================================================
+-- QUERY CONSOLIDADA: VISÃO EXECUTIVA COMPLETA (por Atendimento)
+-- ============================================================================
+-- Racional: Uma única query que traz todos os dados para o dashboard
+-- Todas as métricas contadas por protocol_nm (atendimentos)
+
+WITH atendimentos_base AS (
+    SELECT
+        hs.protocol_nm,
+        hs.created_at_dt AS dt_atendimento,
+        DATE_TRUNC('month', hs.created_at_dt) AS mes_atendimento,
+        hs.partner_channel_ds AS canal,
+        ct.client_id,
+        CASE 
+            WHEN ANY_MATCH(hs.meta_data, x -> x.KEY = 'humanTakeOver' AND UPPER(CAST(x.VALUE AS VARCHAR)) = 'TRUE')
+            THEN 'Humano'
+            ELSE 'GenAI'
+        END AS tipo_atendimento
+    FROM customer_service.customer_service.historic_service hs
+    INNER JOIN martech.martech.client_tracking_inf ct 
+        ON ct.person_id = LOWER(hs.person_uuid)
+    WHERE hs.created_at_dt >= TIMESTAMP '2025-09-01'
+      AND hs.created_at_dt < CURRENT_DATE
+      AND hs.partner_channel_ds IN ('WhatsApp', 'Chat')
+      AND hs.partner_integration_origem_nm = 'AiAssistant'
+),
+
+reclamacoes_bacen AS (
+    SELECT 
+        client_id, 
+        dt_abertura, 
+        protocolo_id_canal,
+        DATE_TRUNC('month', dt_abertura) AS mes_reclamacao
+    FROM workspace.gec.base_atualizacao_bacen_qs
+    WHERE nm_canal = 'BACEN NEON'
+      AND dt_abertura >= DATE '2025-09-01'
+),
+
+-- Total Bacen por mês (Query 1) - Este permanece por protocolo Bacen
+total_bacen AS (
+    SELECT
+        mes_reclamacao,
+        COUNT(DISTINCT protocolo_id_canal) AS total_geral_bacen
+    FROM reclamacoes_bacen
+    GROUP BY mes_reclamacao
+),
+
+-- Cruzamento atendimento -> Bacen
+atendimento_para_bacen AS (
+    SELECT DISTINCT
+        a.protocol_nm,  -- Chave = atendimento
+        a.mes_atendimento,
+        a.canal,
+        a.tipo_atendimento
+    FROM atendimentos_base a
+    INNER JOIN reclamacoes_bacen b 
+        ON CAST(a.client_id AS VARCHAR) = CAST(b.client_id AS VARCHAR)
+        AND b.dt_abertura >= CAST(a.dt_atendimento AS DATE)
+        AND b.dt_abertura <= CAST(a.dt_atendimento AS DATE) + INTERVAL '30' DAY
+),
+
+-- Base total de atendimentos (para calcular taxa)
+base_atendimentos AS (
+    SELECT
+        mes_atendimento,
+        canal,
+        tipo_atendimento,
+        COUNT(DISTINCT protocol_nm) AS total_atendimentos
+    FROM atendimentos_base
+    GROUP BY mes_atendimento, canal, tipo_atendimento
+),
+
+-- Atendimentos que geraram reclamação
+metricas_reclamacoes AS (
+    SELECT
+        mes_atendimento,
+        canal,
+        tipo_atendimento,
+        COUNT(DISTINCT protocol_nm) AS atendimentos_reclamaram
+    FROM atendimento_para_bacen
+    GROUP BY mes_atendimento, canal, tipo_atendimento
+)
+
+SELECT
+    CAST(b.mes_atendimento AS DATE) AS mes_referencia,
+    t.total_geral_bacen,
+    b.canal,
+    b.tipo_atendimento,
+    b.total_atendimentos AS base_atendimentos,
+    COALESCE(m.atendimentos_reclamaram, 0) AS atendimentos_reclamaram,
+    -- Taxa de insatisfação por segmento
+    ROUND(
+        COALESCE(m.atendimentos_reclamaram, 0) * 100.0 / NULLIF(b.total_atendimentos, 0),
+        4
+    ) AS taxa_insatisfacao_pct,
+    -- Percentual do total de reclamações atribuídas
+    ROUND(
+        COALESCE(m.atendimentos_reclamaram, 0) * 100.0 / 
+        NULLIF(SUM(COALESCE(m.atendimentos_reclamaram, 0)) OVER(PARTITION BY b.mes_atendimento), 0),
+        2
+    ) AS pct_do_total_atribuido
+FROM base_atendimentos b
+LEFT JOIN metricas_reclamacoes m 
+    ON b.mes_atendimento = m.mes_atendimento 
+    AND b.canal = m.canal 
+    AND b.tipo_atendimento = m.tipo_atendimento
+LEFT JOIN total_bacen t 
+    ON b.mes_atendimento = t.mes_reclamacao
+ORDER BY mes_referencia DESC, canal, tipo_atendimento;
