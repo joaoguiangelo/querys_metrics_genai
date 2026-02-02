@@ -106,7 +106,7 @@ ORDER BY
 
 ## 2. IMPACTO NO NEGÓCIO
 
-### 2.1 % Conversão (Acordo) 🆗
+### 2.1 % Conversão (Acordo) ❗
 
 **Racional:** Mede efetividade do funil. Calcula taxa de conversão em cada etapa, partindo do CPF informado (lead qualificado) até acordo confirmado. Permite identificar gargalos no funil.
 
@@ -165,40 +165,38 @@ FROM funil_pivot
 ORDER BY mes DESC;
 ```
 
-### 2.2 Recuperação de Crédito (New Cash e Old Cash) 🆗
+### 2.2 Recuperação de Crédito (Amount Recovered) 🆗
 
 **Racional:** Mede o volume de pagamentos efetivos segregando a entrada de caixa novo (**New Cash** - 1ª parcela) da sustentabilidade da carteira (**Old Cash** - parcelas recorrentes > 1). A visão unificada permite acompanhar o fluxo de caixa total gerado pelo canal em uma única execução.
 
 ```sql
-SELECT
-    date(dtpagamento) AS dia,
-    CASE 
-        WHEN dscanal ='WhatsApp' THEN 'Coddera'
-        WHEN dscanal ='Whatsapp GenAI' THEN 'Neon AI'
-        ELSE dscanal
-    END AS canal,
-    '6. Pagamentos' AS Funil,
-    'Pgtos' AS acao,
-    'NA' AS descricao,
-    
-    -- Coluna New Cash (apenas parcela 1)
-    COUNT(CASE WHEN nrparcela = 1 THEN clientid END) AS total_new_cash,
-    
-    -- Coluna Old Cash (apenas parcelas > 1)
-    COUNT(CASE WHEN nrparcela > 1 THEN clientid END) AS total_old_cash,
-    
-    -- Coluna Total (Soma de ambos, opcional para conferência)
-    COUNT(clientid) AS total_geral
-
-FROM workspace.cobranca.BancoProducao
-WHERE
-    dscanal IN ('Monest','1Digital','WhatsApp','Whatsapp GenAI')
-    AND dtcadastronegociacao BETWEEN DATE('2024-01-01') AND CURRENT_DATE
-    AND dstipopessoa = 'F'
-    AND dtpagamento IS NOT NULL
-    -- Removemos o filtro de nrparcela do WHERE para permitir que ambos os tipos entrem no cálculo
-GROUP BY 1, 2
-ORDER BY date(dtpagamento) DESC, canal;
+select
+    date_trunc('month', dtpagamento) as mes
+    ,case 
+        when dscanal ='WhatsApp' then 'Coddera'
+        when dscanal ='Whatsapp GenAI' then 'Neon AI'
+        else dscanal
+    end as canal
+    ,'6. Pagamentos' as Funil 
+    ,'Pgtos' as acao
+    ,'NA' as descricao
+    -- Métricas de New Cash (nrparcela = 1)
+    ,count(case when nrparcela = 1 then clientid end) as qtde_new_cash
+    ,sum(case when nrparcela = 1 then vlparcelapaga else 0 end) as valor_new_cash
+    -- Métricas de Old Cash (nrparcela > 1)
+    ,count(case when nrparcela > 1 then clientid end) as qtde_old_cash
+    ,sum(case when nrparcela > 1 then vlparcelapaga else 0 end) as valor_old_cash
+    -- Totais Gerais do Mês
+    ,count(clientid) as total_pgtos
+    ,sum(vlparcelapaga) as valor_recuperado_total
+from workspace.cobranca.BancoProducao
+where
+    dscanal in ('Monest','1Digital','WhatsApp','Whatsapp GenAI')
+    and dtcadastronegociacao >= date('2024-01-01')
+    and dstipopessoa = 'F'
+    and dtpagamento >= date('2025-10-01')
+group by 1, 2
+order by mes desc, canal;
 ```
 ---
 
@@ -317,6 +315,7 @@ SELECT
 FROM metricas
 ORDER BY mes, canal
 ```
+
 
 
 
