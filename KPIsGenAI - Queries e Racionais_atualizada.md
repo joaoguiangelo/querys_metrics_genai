@@ -106,63 +106,34 @@ ORDER BY
 
 ## 2. IMPACTO NO NEGÓCIO
 
-### 2.1 % Conversão (Acordo) ❗
+### 2.1 % Conversão (Acordo) 🆗
 
 **Racional:** Mede efetividade do funil. Calcula taxa de conversão em cada etapa, partindo do CPF informado (lead qualificado) até acordo confirmado. Permite identificar gargalos no funil.
 
 ```sql
-WITH funil_genai AS (
-    SELECT 
-        DATE_TRUNC('month', DataCriacao) AS mes,
-        CASE
-            WHEN acao = 'get-client' THEN '1_cpf_informado'
-            WHEN acao = 'get-invoice-debt' THEN '2_visualizou_divida'
-            WHEN acao = 'simulate-agreements' THEN '3_simulacao'
-            WHEN acao = 'confirm-agreement' THEN '4_acordo_confirmado'
-            WHEN acao = 'paymentslip-generate' THEN '5_boleto_gerado'
-        END AS etapa,
-        COUNT(DISTINCT idcliente) AS clientes
-    FROM hive.neonpottencial.dbo_analyticsevento
-    WHERE 
-        area = 'cobranca.neon.whats.gen-ai'
-        AND descricao = 'CLICK'
-        AND acao IN ('get-client', 'get-invoice-debt', 'simulate-agreements', 
-                     'confirm-agreement', 'paymentslip-generate')
-        AND DATE(DataCriacao) >= DATE '2025-01-01'
-    GROUP BY 1, 2
-),
-
-funil_pivot AS (
-    SELECT
-        mes,
-        MAX(CASE WHEN etapa = '1_cpf_informado' THEN clientes END) AS cpf_informado,
-        MAX(CASE WHEN etapa = '2_visualizou_divida' THEN clientes END) AS visualizou_divida,
-        MAX(CASE WHEN etapa = '3_simulacao' THEN clientes END) AS simulacao,
-        MAX(CASE WHEN etapa = '4_acordo_confirmado' THEN clientes END) AS acordo_confirmado,
-        MAX(CASE WHEN etapa = '5_boleto_gerado' THEN clientes END) AS boleto_gerado
-    FROM funil_genai
-    GROUP BY 1
-)
-
-SELECT
-    mes,
-    cpf_informado,
-    visualizou_divida,
-    simulacao,
-    acordo_confirmado,
-    boleto_gerado,
-    
-    -- Conversões etapa a etapa
-    ROUND(visualizou_divida * 100.0 / NULLIF(cpf_informado, 0), 2) AS conv_cpf_para_divida_pct,
-    ROUND(simulacao * 100.0 / NULLIF(visualizou_divida, 0), 2) AS conv_divida_para_simul_pct,
-    ROUND(acordo_confirmado * 100.0 / NULLIF(simulacao, 0), 2) AS conv_simul_para_acordo_pct,
-    ROUND(boleto_gerado * 100.0 / NULLIF(acordo_confirmado, 0), 2) AS conv_acordo_para_boleto_pct,
-    
-    -- KPI Principal: CPF → Acordo
-    ROUND(acordo_confirmado * 100.0 / NULLIF(cpf_informado, 0), 2) AS conversao_total_pct
-
-FROM funil_pivot
-ORDER BY mes DESC;
+select
+    date_trunc('month', DataCriacao) as mes,
+    'Neon AI' as canal,
+    case
+        when a.acao = 'get-client' then '0. Informou CPF'
+        when a.acao = 'get-invoice-debt' then '1. Visualizou a divida'
+        when a.acao = 'simulate-agreements' then '2. Simulacao'
+        when a.acao = 'confirm-agreement' then '3. Confirmacao'
+        when a.acao = 'paymentslip-generate' then '4. Geracao boleto'
+        else '5. Outros'
+    end as Funil,
+    acao,
+    descricao,
+    count(distinct idcliente) as total
+from hive.neonpottencial.dbo_analyticsevento a
+where
+    a.area = 'cobranca.neon.whats.gen-ai'
+    and a.descricao = 'CLICK'
+    -- Alterado para capturar desde o início de Outubro/2025
+    and date(DataCriacao) >= date('2025-10-01') 
+    and date(DataCriacao) <= current_date
+group by 1, 2, 3, 4, 5 
+order by 1 desc, 3 asc
 ```
 
 ### 2.2 Recuperação de Crédito (Amount Recovered) 🆗
@@ -315,6 +286,7 @@ SELECT
 FROM metricas
 ORDER BY mes, canal
 ```
+
 
 
 
